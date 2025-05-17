@@ -17,31 +17,52 @@ from src.generate_patches import CropImage
 from src.utility import parse_model_name
 warnings.filterwarnings('ignore')
 
-
 SAMPLE_IMAGE_PATH = "./images/sample/"
 
 
-# 因为安卓端APK获取的视频流宽高比为3:4,为了与之一致，所以将宽高比限制为3:4
-def check_image(image):
-    height, width, channel = image.shape
-    if width/height != 3/4:
-        print("Image is not appropriate!!!\nHeight/Width should be 4/3.")
-        return False
+def crop_to_4_3(image):
+    """Crops the input image to a 4:3 aspect ratio centered."""
+    height, width, _ = image.shape
+    target_ratio = 3 / 4
+    current_ratio = width / height
+
+    if current_ratio > target_ratio:
+        # Too wide — crop width
+        new_width = int(height * target_ratio)
+        start_x = (width - new_width) // 2
+        cropped_image = image[:, start_x:start_x + new_width]
+    elif current_ratio < target_ratio:
+        # Too tall — crop height
+        new_height = int(width / target_ratio)
+        start_y = (height - new_height) // 2
+        cropped_image = image[start_y:start_y + new_height, :]
     else:
-        return True
+        # Already 4:3
+        cropped_image = image
+
+    return cropped_image
 
 
 def test(image_name, model_dir, device_id):
     model_test = AntiSpoofPredict(device_id)
     image_cropper = CropImage()
     image = cv2.imread(SAMPLE_IMAGE_PATH + image_name)
-    result = check_image(image)
-    if result is False:
+
+    if image is None:
+        print(f"Failed to load image: {SAMPLE_IMAGE_PATH + image_name}")
         return
+
+    # Auto-crop to 4:3 if not already
+    height, width, _ = image.shape
+    if width / height != 3 / 4:
+        print("Image is not appropriate!!! Cropping to 4:3 aspect ratio.")
+        image = crop_to_4_3(image)
+
     image_bbox = model_test.get_bbox(image)
     prediction = np.zeros((1, 3))
     test_speed = 0
-    # sum the prediction from single model's result
+
+    # Sum the prediction from all models
     for model_name in os.listdir(model_dir):
         h_input, w_input, model_type, scale = parse_model_name(model_name)
         param = {
@@ -57,20 +78,21 @@ def test(image_name, model_dir, device_id):
         img = image_cropper.crop(**param)
         start = time.time()
         prediction += model_test.predict(img, os.path.join(model_dir, model_name))
-        test_speed += time.time()-start
+        test_speed += time.time() - start
 
-    # draw result of prediction
+    # Draw result of prediction
     label = np.argmax(prediction)
-    value = prediction[0][label]/2
+    value = prediction[0][label] / 2
     if label == 1:
-        print("Image '{}' is Real Face. Score: {:.2f}.".format(image_name, value))
-        result_text = "RealFace Score: {:.2f}".format(value)
+        print(f"Image '{image_name}' is Real Face. Score: {value:.2f}.")
+        result_text = f"RealFace Score: {value:.2f}"
         color = (255, 0, 0)
     else:
-        print("Image '{}' is Fake Face. Score: {:.2f}.".format(image_name, value))
-        result_text = "FakeFace Score: {:.2f}".format(value)
+        print(f"Image '{image_name}' is Fake Face. Score: {value:.2f}.")
+        result_text = f"FakeFace Score: {value:.2f}"
         color = (0, 0, 255)
-    print("Prediction cost {:.2f} s".format(test_speed))
+
+    print(f"Prediction cost {test_speed:.2f} s")
     cv2.rectangle(
         image,
         (image_bbox[0], image_bbox[1]),
@@ -80,7 +102,7 @@ def test(image_name, model_dir, device_id):
         image,
         result_text,
         (image_bbox[0], image_bbox[1] - 5),
-        cv2.FONT_HERSHEY_COMPLEX, 0.5*image.shape[0]/1024, color)
+        cv2.FONT_HERSHEY_COMPLEX, 0.5 * image.shape[0] / 1024, color)
 
     format_ = os.path.splitext(image_name)[-1]
     result_image_name = image_name.replace(format_, "_result" + format_)
